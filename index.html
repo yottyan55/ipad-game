@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Chase & Cheese</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#0b0b0f; overflow:hidden; touch-action:none; }
+    #wrap { position:fixed; inset:0; }
+    canvas { width:100%; height:100%; display:block; }
+
+    .hud {
+      position: fixed; left: 12px; top: 12px; z-index: 5;
+      color: #f2f2ff;
+      font: 700 14px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      background: rgba(0,0,0,.35);
+      border: 1px solid rgba(255,255,255,.14);
+      padding: 10px 12px;
+      border-radius: 12px;
+      backdrop-filter: blur(6px);
+      user-select:none; -webkit-user-select:none;
+    }
+    .hud small { opacity:.85; font-weight:600; }
+
+    .overlay {
+      position: fixed; inset:0; z-index: 10;
+      display:flex; align-items:center; justify-content:center;
+      background: rgba(0,0,0,.35);
+      backdrop-filter: blur(6px);
+      padding: 22px;
+      user-select:none; -webkit-user-select:none;
+    }
+    .card {
+      width:min(560px, 92vw);
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: rgba(20,20,30,.70);
+      padding: 18px 18px 14px;
+      box-shadow: 0 16px 48px rgba(0,0,0,.45);
+      color:#f2f2ff;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+    }
+    .title { font-size:22px; font-weight:900; margin-bottom:6px; }
+    .desc { opacity:.92; font-weight:650; line-height:1.55; }
+    .btns { display:flex; gap:10px; justify-content:center; margin-top:14px; flex-wrap:wrap; }
+    button {
+      appearance:none;
+      border: 1px solid rgba(255,255,255,.18);
+      color:#f2f2ff;
+      background: rgba(255,255,255,.10);
+      padding: 10px 14px;
+      border-radius: 12px;
+      font: 800 14px system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      cursor:pointer;
+    }
+    button:active { transform: translateY(1px); }
+    .note { margin-top:10px; opacity:.75; font-weight:650; font-size:13px; }
+    .warn { margin-top:10px; opacity:.9; font-weight:750; font-size:13px; color:#ffe8a3; }
+  </style>
+</head>
+<body>
+  <div id="wrap"><canvas id="c"></canvas></div>
+
+  <div class="hud" id="hud">
+    スコア: <span id="score">0</span>　レベル: <span id="lvl">1</span><br/>
+    <small>操作：画面を押したまま動かす（指の方向へネズミが移動）</small>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="card">
+      <div class="title">Chase &amp; Cheese</div>
+      <div class="desc">
+        ネズミ役でチーズを集めよう。猫役に捕まったら負け。<br/>
+        iPad：画面を押したまま動かすだけ。
+      </div>
+      <div class="btns">
+        <button id="startBtn">スタート</button>
+        <button id="howBtn">遊び方</button>
+      </div>
+      <div class="note">
+        同じフォルダに <b>cat_sprite.png</b> と <b>mouse_sprite.png</b> を置いてください。
+      </div>
+      <div class="warn" id="assetWarn" style="display:none;">
+        画像が読み込めていません。ファイル名（大文字/小文字含む）を確認してください。
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  const scoreEl = document.getElementById("score");
+  const lvlEl = document.getElementById("lvl");
+  const overlay = document.getElementById("overlay");
+  const startBtn = document.getElementById("startBtn");
+  const howBtn = document.getElementById("howBtn");
+  const assetWarn = document.getElementById("assetWarn");
+
+  // HiDPI resize
+  function resize() {
+    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const w = Math.floor(canvas.clientWidth * dpr);
+    const h = Math.floor(canvas.clientHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w; canvas.height = h;
+    }
+  }
+  new ResizeObserver(resize).observe(canvas);
+  window.addEventListener("orientationchange", () => setTimeout(resize, 200));
+
+  // Assets (same folder)
+  const ASSETS = {
+    mouse: new Image(),
+    cat: new Image(),
+  };
+  ASSETS.mouse.src = "mouse_sprite.png";
+  ASSETS.cat.src   = "cat_sprite.png";
+
+  function isLoaded(img){
+    return img && img.complete && img.naturalWidth > 0;
+  }
+
+  // Helpers
+  const rnd = (a,b)=>a+Math.random()*(b-a);
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+  // Game state
+  const state = {
+    running:false,
+    gameOver:false,
+    t:0,
+    score:0,
+    level:1,
+    target:null,
+    lastCheeseAt:0,
+    cheeses:[],
+    fx:[],
+    mouse:{ x:0, y:0, r:26, speed: 520, face: 1 }, // player
+    cat:{ x:0, y:0, r:34, speed: 360, face: 1 },   // chaser
+  };
+
+  function updateHUD(){
+    scoreEl.textContent = String(state.score);
+    lvlEl.textContent = String(state.level);
+  }
+
+  function reset(){
+    resize();
+    const W = canvas.width, H = canvas.height;
+
+    state.running = false;
+    state.gameOver = false;
+    state.t = 0;
+    state.score = 0;
+    state.level = 1;
+    state.target = null;
+    state.lastCheeseAt = 0;
+
+    state.mouse.x = W*0.25; state.mouse.y = H*0.58; state.mouse.face = 1;
+    state.cat.x   = W*0.78; state.cat.y   = H*0.45; state.cat.face = -1;
+
+    state.cheeses.length = 0;
+    state.fx.length = 0;
+    for (let i=0;i<4;i++) spawnCheese();
+    updateHUD();
+  }
+
+  function spawnCheese(){
+    const W = canvas.width, H = canvas.height;
+    let x,y;
+    for (let tries=0; tries<50; tries++){
+      x = rnd(50, W-50);
+      y = rnd(90, H-50);
+      const dx = x - state.cat.x;
+      const dy = y - state.cat.y;
+      if (Math.hypot(dx,dy) > 140) break;
+    }
+    state.cheeses.push({ x, y, r: 13 });
+  }
+
+  // Input (pointer works for touch & mouse)
+  function pointerPos(e){
+    const rect = canvas.getBoundingClientRect();
+    const dpr = canvas.width / rect.width;
+    return {
+      x: (e.clientX - rect.left) * dpr,
+      y: (e.clientY - rect.top)  * dpr
+    };
+  }
+  let down = false;
+
+  function onDown(e){
+    down = true;
+    state.target = pointerPos(e);
+  }
+  function onMove(e){
+    if (!down) return;
+    state.target = pointerPos(e);
+  }
+  function onUp(){
+    down = false;
+    state.target = null;
+  }
+
+  canvas.addEventListener("pointerdown", (e)=>{ canvas.setPointerCapture(e.pointerId); onDown(e); });
+  canvas.addEventListener("pointermove", onMove);
+  canvas.addEventListener("pointerup", onUp);
+  canvas.addEventListener("pointercancel", onUp);
+
+  // Prevent scroll/gesture interference on iPad
+  document.addEventListener("touchmove", (e)=>e.preventDefault(), { passive:false });
+
+  // Main loop
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+
+    if (state.running) step(dt);
+    draw();
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  function step(dt){
+    resize();
+    state.t += dt;
+
+    // Level up by score
+    const lvl = 1 + Math.floor(state.score / 8);
+    if (lvl !== state.level) {
+      state.level = lvl;
+      updateHUD();
+    }
+
+    const W = canvas.width, H = canvas.height;
+    const M = state.mouse;
+    const C = state.cat;
+
+    // Move mouse toward target
+    const mSpeed = M.speed * (1 + (state.level-1) * 0.03);
+    if (state.target){
+      const dx = state.target.x - M.x;
+      const dy = state.target.y - M.y;
+
+      // face update (left/right)
+      if (Math.abs(dx) > 2) M.face = dx >= 0 ? 1 : -1;
+
+      const d = Math.hypot(dx,dy);
+      if (d > 2){
+        M.x += (dx/d) * mSpeed * dt;
+        M.y += (dy/d) * mSpeed * dt;
+      }
+    }
+    M.x = clamp(M.x, M.r, W - M.r);
+    M.y = clamp(M.y, 70 + M.r, H - M.r);
+
+    // Move cat toward mouse
+    const cSpeed = C.speed * (1 + (state.level-1) * 0.10);
+    {
+      const dx = M.x - C.x;
+      const dy = M.y - C.y;
+
+      // face update (left/right)
+      if (Math.abs(dx) > 2) C.face = dx >= 0 ? 1 : -1;
+
+      const d = Math.hypot(dx,dy) || 1;
+      C.x += (dx/d) * cSpeed * dt;
+      C.y += (dy/d) * cSpeed * dt;
+    }
+    C.x = clamp(C.x, C.r, W - C.r);
+    C.y = clamp(C.y, 70 + C.r, H - C.r);
+
+    // Spawn cheeses
+    const spawnEvery = Math.max(0.65, 1.4 - state.level * 0.06);
+    if (state.t - state.lastCheeseAt > spawnEvery){
+      state.lastCheeseAt = state.t;
+      if (state.cheeses.length < 10) spawnCheese();
+    }
+
+    // Collisions: mouse vs cheese
+    for (let i = state.cheeses.length - 1; i >= 0; i--){
+      const ch = state.cheeses[i];
+      if (Math.hypot(M.x - ch.x, M.y - ch.y) < M.r + ch.r){
+        state.cheeses.splice(i, 1);
+        state.score += 1;
+        updateHUD();
+
+        // small pushback on cat
+        const pdx = C.x - M.x, pdy = C.y - M.y;
+        const pd = Math.hypot(pdx,pdy) || 1;
+        C.x += (pdx/pd) * 28;
+        C.y += (pdy/pd) * 28;
+
+        // sparkle fx
+        for (let k=0;k<8;k++){
+          state.fx.push({
+            x: M.x, y: M.y,
+            vx: (Math.random()*2-1)*220,
+            vy: (Math.random()*2-1)*220,
+            life: 0.35
+          });
+        }
+      }
+    }
+
+    // Update fx
+    for (let i=state.fx.length-1; i>=0; i--){
+      const p = state.fx[i];
+      p.life -= dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.92; p.vy *= 0.92;
+      if (p.life <= 0) state.fx.splice(i,1);
+    }
+
+    // Cat catches mouse
+    if (Math.hypot(M.x - C.x, M.y - C.y) < M.r + C.r * 0.75){
+      doGameOver();
+    }
+  }
+
+  function doGameOver(){
+    state.running = false;
+    state.gameOver = true;
+
+    overlay.innerHTML = `
+      <div class="card">
+        <div class="title">ゲームオーバー</div>
+        <div class="desc">スコア：<b>${state.score}</b>　レベル：<b>${state.level}</b></div>
+        <div class="btns">
+          <button id="retryBtn">もう一回</button>
+          <button id="closeBtn">閉じる</button>
+        </div>
+        <div class="note">コツ：チーズで猫が少し押し戻されます。集めて距離を作ると伸びます。</div>
+      </div>
+    `;
+    overlay.style.display = "flex";
+
+    document.getElementById("retryBtn").onclick = () => {
+      reset();
+      state.running = true;
+      overlay.style.display = "none";
+      rebuildStartOverlay();
+    };
+    document.getElementById("closeBtn").onclick = () => {
+      overlay.style.display = "none";
+    };
+  }
+
+  // Drawing
+  function draw(){
+    resize();
+    const W = canvas.width, H = canvas.height;
+
+    // Background
+    const g = ctx.createRadialGradient(W*0.5, H*0.35, 10, W*0.5, H*0.5, Math.max(W,H));
+    g.addColorStop(0, "#1c1c2a");
+    g.addColorStop(1, "#0b0b0f");
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // Top bar
+    ctx.fillStyle = "rgba(255,255,255,0.05)";
+    ctx.fillRect(0, 0, W, 66);
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.beginPath(); ctx.moveTo(0,66); ctx.lineTo(W,66); ctx.stroke();
+
+    // Sparkles
+    for (const p of state.fx){
+      ctx.globalAlpha = Math.max(0, p.life / 0.35);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3.2, 0, Math.PI*2);
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Cheeses
+    for (const ch of state.cheeses) drawCheese(ch.x, ch.y, ch.r);
+
+    // Cat & Mouse (sprites with facing)
+    drawSprite(ASSETS.cat, state.cat.x, state.cat.y, state.cat.r, state.cat.face);
+    drawSprite(ASSETS.mouse, state.mouse.x, state.mouse.y, state.mouse.r, state.mouse.face);
+
+    // Target ring
+    if (state.target){
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(state.target.x, state.target.y, 18, 0, Math.PI*2);
+      ctx.stroke();
+    }
+
+    // Asset warning (only on start screen)
+    if (!state.running && !state.gameOver){
+      const ok = isLoaded(ASSETS.cat) && isLoaded(ASSETS.mouse);
+      assetWarn.style.display = ok ? "none" : "block";
+    }
+  }
+
+  function drawSprite(img, x, y, r, face){
+    const h = r * 2;
+
+    // shadow
+    ctx.save();
+    ctx.globalAlpha = 0.22;
+    ctx.beginPath();
+    ctx.ellipse(x, y + r*0.60, r*0.95, r*0.45, 0, 0, Math.PI*2);
+    ctx.fillStyle = "#000";
+    ctx.fill();
+    ctx.restore();
+
+    if (isLoaded(img)){
+      const aspect = img.naturalWidth / img.naturalHeight;
+      const w = h * aspect;
+
+      ctx.save();
+      ctx.translate(x, y);
+      if (face === -1) ctx.scale(-1, 1);
+      ctx.drawImage(img, -w/2, -h/2, w, h);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  function drawCheese(x,y,r){
+    // vector cheese (no image needed)
+    ctx.save();
+    ctx.translate(x,y);
+
+    // shadow
+    ctx.globalAlpha = 0.18;
+    ctx.beginPath();
+    ctx.ellipse(0, r*0.9, r*0.8, r*0.35, 0, 0, Math.PI*2);
+    ctx.fillStyle = "#000";
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = "#e7c85a";
+    ctx.beginPath();
+    ctx.moveTo(-r, r*0.9);
+    ctx.lineTo(-r, -r*0.6);
+    ctx.lineTo( r, 0);
+    ctx.lineTo(-r, r*0.9);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(0,0,0,0.12)";
+    for (let i=0;i<3;i++){
+      const hx = rnd(-r*0.35, r*0.25);
+      const hy = rnd(-r*0.25, r*0.35);
+      const hr = rnd(r*0.10, r*0.20);
+      ctx.beginPath(); ctx.arc(hx,hy,hr,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function rebuildStartOverlay(){
+    overlay.innerHTML = `
+      <div class="card">
+        <div class="title">Chase &amp; Cheese</div>
+        <div class="desc">
+          ネズミ役でチーズを集めよう。猫役に捕まったら負け。<br/>
+          iPad：画面を押したまま動かすだけ。
+        </div>
+        <div class="btns">
+          <button id="startBtn">スタート</button>
+          <button id="howBtn">遊び方</button>
+        </div>
+        <div class="note">
+          同じフォルダに <b>cat_sprite.png</b> と <b>mouse_sprite.png</b> を置いてください。
+        </div>
+        <div class="warn" id="assetWarn" style="display:none;">
+          画像が読み込めていません。ファイル名（大文字/小文字含む）を確認してください。
+        </div>
+      </div>
+    `;
+    // (re-wire)
+    document.getElementById("startBtn").onclick = () => {
+      reset();
+      state.running = true;
+      overlay.style.display = "none";
+    };
+    document.getElementById("howBtn").onclick = () => location.reload();
+  }
+
+  // Wire buttons (initial)
+  startBtn.onclick = () => {
+    reset();
+    state.running = true;
+    overlay.style.display = "none";
+  };
+
+  howBtn.onclick = () => {
+    overlay.innerHTML = `
+      <div class="card">
+        <div class="title">遊び方</div>
+        <div class="desc">
+          1) 画面を押したまま指を動かす → ネズミが追従<br/>
+          2) チーズを拾う → スコア増 & 猫が少し押し戻る<br/>
+          3) 猫に触れたら負け
+        </div>
+        <div class="btns">
+          <button id="backBtn">戻る</button>
+        </div>
+        <div class="note">
+          画像が出ないときは、GitHub上のファイル名と <code>mouse_sprite.png</code>/<code>cat_sprite.png</code> が完全一致しているか確認。
+        </div>
+      </div>
+    `;
+    overlay.style.display = "flex";
+    document.getElementById("backBtn").onclick = () => location.reload();
+  };
+
+  // Initialize
+  reset();
+
+})();
+</script>
+</body>
+</html>
