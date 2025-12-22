@@ -137,7 +137,7 @@
     lastCheeseAt:0,
     cheeses:[],
     fx:[],
-    mouse:{ x:0, y:0, r:26, speed: 520, face: 1 }, // player
+    mouse:{ x:0, y:0, r:26, speed: 520, face: 1, rMin: 18, rMax: 60, growStep: 1.2, shrinkStep: 4.0, invuln: 0 }, // player
     cat:{ x:0, y:0, r:34, speed: 360, face: 1 },   // chaser
   };
 
@@ -158,7 +158,7 @@
     state.target = null;
     state.lastCheeseAt = 0;
 
-    state.mouse.x = W*0.25; state.mouse.y = H*0.58; state.mouse.face = 1;
+    state.mouse.x = W*0.25; state.mouse.y = H*0.58; state.mouse.face = 1; state.mouse.r = 26; state.mouse.invuln = 0;
     state.cat.x   = W*0.78; state.cat.y   = H*0.45; state.cat.face = -1;
 
     state.cheeses.length = 0;
@@ -240,6 +240,9 @@
     const M = state.mouse;
     const C = state.cat;
 
+    // invulnerability timer
+    if (M.invuln > 0) M.invuln = Math.max(0, M.invuln - dt);
+
     // Move mouse toward target
     const mSpeed = M.speed * (1 + (state.level-1) * 0.03);
     if (state.target){
@@ -287,6 +290,10 @@
       if (Math.hypot(M.x - ch.x, M.y - ch.y) < M.r + ch.r){
         state.cheeses.splice(i, 1);
         state.score += 1;
+
+        // grow a bit (mouse becomes bigger)
+        M.r = Math.min(M.rMax, M.r + M.growStep);
+
         updateHUD();
 
         // small pushback on cat
@@ -317,9 +324,25 @@
       if (p.life <= 0) state.fx.splice(i,1);
     }
 
-    // Cat catches mouse
-    if (Math.hypot(M.x - C.x, M.y - C.y) < M.r + C.r * 0.75){
-      doGameOver();
+    // Cat catches mouse -> shrink (not instant game over)
+    const catchDist = M.r + C.r * 0.75;
+    if (M.invuln <= 0 && Math.hypot(M.x - C.x, M.y - C.y) < catchDist) {
+      // shrink
+      M.r = Math.max(M.rMin, M.r - M.shrinkStep);
+
+      // small knockback so it doesn't chain-hit immediately
+      const dx = M.x - C.x, dy = M.y - C.y;
+      const d = Math.hypot(dx,dy) || 1;
+      M.x += (dx/d) * 40;
+      M.y += (dy/d) * 40;
+
+      // invulnerability (seconds)
+      M.invuln = 0.9;
+
+      // if too small -> game over
+      if (M.r <= M.rMin + 0.01) {
+        doGameOver();
+      }
     }
   }
 
@@ -382,9 +405,18 @@
     // Cheeses
     for (const ch of state.cheeses) drawCheese(ch.x, ch.y, ch.r);
 
-    // Cat & Mouse (sprites with facing)
+    // Cat (sprite with facing)
     drawSprite(ASSETS.cat, state.cat.x, state.cat.y, state.cat.r, state.cat.face);
-    drawSprite(ASSETS.mouse, state.mouse.x, state.mouse.y, state.mouse.r, state.mouse.face);
+
+    // Mouse blink while invulnerable
+    if (state.mouse.invuln > 0) {
+      const blink = Math.floor(performance.now() / 90) % 2;
+      if (blink === 0) {
+        drawSprite(ASSETS.mouse, state.mouse.x, state.mouse.y, state.mouse.r, state.mouse.face);
+      }
+    } else {
+      drawSprite(ASSETS.mouse, state.mouse.x, state.mouse.y, state.mouse.r, state.mouse.face);
+    }
 
     // Target ring
     if (state.target){
@@ -503,8 +535,8 @@
         <div class="title">遊び方</div>
         <div class="desc">
           1) 画面を押したまま指を動かす → ネズミが追従<br/>
-          2) チーズを拾う → スコア増 & 猫が少し押し戻る<br/>
-          3) 猫に触れたら負け
+          2) チーズを拾う → スコア増 & ネズミが少し大きくなる<br/>
+          3) 猫に触れる → ネズミが少し小さくなる（小さくなりすぎると負け）
         </div>
         <div class="btns">
           <button id="backBtn">戻る</button>
