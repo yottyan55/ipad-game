@@ -31,7 +31,7 @@
       user-select:none; -webkit-user-select:none;
     }
     .card {
-      width:min(600px, 92vw);
+      width:min(640px, 92vw);
       border-radius: 18px;
       border: 1px solid rgba(255,255,255,.16);
       background: rgba(20,20,30,.70);
@@ -56,6 +56,7 @@
     button:active { transform: translateY(1px); }
     .note { margin-top:10px; opacity:.75; font-weight:650; font-size:13px; }
     .warn { margin-top:10px; opacity:.95; font-weight:800; font-size:13px; color:#ffe8a3; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
   </style>
 </head>
 <body>
@@ -71,14 +72,14 @@
       <div class="title">Chase &amp; Cheese</div>
       <div class="desc">
         ネズミ役でチーズを集めよう。猫に触れられると小さくなる。<br/>
-        たくさん食べて大きくなると、<b>鬼モード</b>で猫が逃げ出す。追いかけて捕まえよう。
+        チーズを<b>10個</b>食べると<b>鬼モード</b>に変身。猫が泣きながら逃げるので追いかけよう。
       </div>
       <div class="btns">
         <button id="startBtn">スタート</button>
         <button id="howBtn">遊び方</button>
       </div>
       <div class="note">
-        同じフォルダに以下を置いてください：<br/>
+        同じフォルダに置く：<br/>
         <b>cat_sprite.png / mouse_sprite.png / mouse_rage.png / cat_scared.png / cat_cry.png</b>
       </div>
       <div class="warn" id="assetWarn" style="display:none;">
@@ -99,14 +100,38 @@
   const howBtn = document.getElementById("howBtn");
   const assetWarn = document.getElementById("assetWarn");
 
+  // ----- Scaling (fix: iPad looked small because DPR>1) -----
+  // We keep positions in device pixels (DPR space), and scale character sizes by (DPR * touchBoost).
+  let DPR = 1;
+  let SCALE = 1; // size scale in device pixels
+  function computeScale(dpr){
+    const coarse = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+    const touchBoost = coarse ? 1.25 : 1.0; // iPad/phone -> a bit bigger than PC
+    return dpr * touchBoost;
+  }
+
+  // Base sizes (in "PC CSS px" sense; will be multiplied by SCALE)
+  const BASE = {
+    mouseR: 26,
+    catR: 34,
+    cheeseR: 13,
+    growStep: 1.2,
+    shrinkStep: 4.0,
+    rMin: 18,
+    rMax: 60,
+  };
+
   // HiDPI resize
   function resize() {
-    const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
-    const w = Math.floor(canvas.clientWidth * dpr);
-    const h = Math.floor(canvas.clientHeight * dpr);
+    const newDpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+    const rect = canvas.getBoundingClientRect();
+    const w = Math.floor(rect.width * newDpr);
+    const h = Math.floor(rect.height * newDpr);
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w; canvas.height = h;
     }
+    DPR = newDpr;
+    SCALE = computeScale(DPR);
   }
   new ResizeObserver(resize).observe(canvas);
   window.addEventListener("orientationchange", () => setTimeout(resize, 200));
@@ -140,14 +165,28 @@
     t:0,
     score:0,
     level:1,
+    cheesesEaten: 0,          // ★チーズ累計（変身判定用）
     target:null,
     lastCheeseAt:0,
     cheeses:[],
     fx:[],
-    rage: { active:false, t:0, threshold: 46, duration: 7.0 },
+    rage: { active:false, t:0, duration: 7.0, nextAt: 10 }, // ★10個で鬼モード（次は+10で再発動）
     mouse:{ x:0, y:0, r:26, speed: 520, face: 1, rMin: 18, rMax: 60, growStep: 1.2, shrinkStep: 4.0, invuln: 0 },
     cat:{ x:0, y:0, r:34, speed: 360, face: 1 },
   };
+
+  function applyScaledParams(){
+    // sizes in device pixels
+    state.mouse.rMin = BASE.rMin * SCALE;
+    state.mouse.rMax = BASE.rMax * SCALE;
+    state.mouse.growStep = BASE.growStep * SCALE;
+    state.mouse.shrinkStep = BASE.shrinkStep * SCALE;
+
+    state.cat.r = BASE.catR * SCALE;
+
+    // ensure current mouse r stays within bounds after scaling changes
+    state.mouse.r = clamp(state.mouse.r, state.mouse.rMin, state.mouse.rMax);
+  }
 
   function updateHUD(){
     scoreEl.textContent = String(state.score);
@@ -156,6 +195,8 @@
 
   function reset(){
     resize();
+    applyScaledParams();
+
     const W = canvas.width, H = canvas.height;
 
     state.running = false;
@@ -163,18 +204,24 @@
     state.t = 0;
     state.score = 0;
     state.level = 1;
+    state.cheesesEaten = 0;
     state.target = null;
     state.lastCheeseAt = 0;
 
     state.rage.active = false;
     state.rage.t = 0;
+    state.rage.nextAt = 10;
 
-    state.mouse.x = W*0.25; state.mouse.y = H*0.58;
-    state.mouse.face = 1;
-    state.mouse.r = 26;
+    // start sizes (scaled)
+    state.mouse.r = BASE.mouseR * SCALE;
     state.mouse.invuln = 0;
+    state.mouse.face = 1;
 
-    state.cat.x = W*0.78; state.cat.y = H*0.45;
+    state.mouse.x = W*0.25;
+    state.mouse.y = H*0.58;
+
+    state.cat.x = W*0.78;
+    state.cat.y = H*0.45;
     state.cat.face = -1;
 
     state.cheeses.length = 0;
@@ -183,8 +230,13 @@
     updateHUD();
   }
 
+  function cheeseRadius(){
+    return BASE.cheeseR * SCALE;
+  }
+
   function spawnCheese(){
     const W = canvas.width, H = canvas.height;
+    const r = cheeseRadius();
     let x,y;
     for (let tries=0; tries<60; tries++){
       x = rnd(50, W-50);
@@ -193,13 +245,13 @@
       const dy = y - state.cat.y;
       if (Math.hypot(dx,dy) > 140) break;
     }
-    state.cheeses.push({ x, y, r: 13 });
+    state.cheeses.push({ x, y, r });
   }
 
   // Input (pointer works for touch & mouse)
   function pointerPos(e){
     const rect = canvas.getBoundingClientRect();
-    const dpr = canvas.width / rect.width;
+    const dpr = canvas.width / rect.width; // == DPR
     return { x:(e.clientX-rect.left)*dpr, y:(e.clientY-rect.top)*dpr };
   }
   let down = false;
@@ -240,6 +292,7 @@
 
   function step(dt){
     resize();
+    applyScaledParams();
     state.t += dt;
 
     // Level up by score
@@ -256,14 +309,15 @@
     // invulnerability timer
     if (M.invuln > 0) M.invuln = Math.max(0, M.invuln - dt);
 
-    // ---- Rage mode start/end ----
-    if (!state.rage.active && M.r >= state.rage.threshold) {
+    // ---- Rage mode start/end (trigger by cheeses eaten: 10) ----
+    if (!state.rage.active && state.cheesesEaten >= state.rage.nextAt) {
       state.rage.active = true;
       state.rage.t = 0;
+      state.rage.nextAt += 10; // 次の変身も10個ごと（不要ならこの行を消す）
 
       // 猫を少し離す（即接触を避ける）
-      C.x = clamp(C.x + (Math.random()<0.5 ? -120 : 120), C.r, W - C.r);
-      C.y = clamp(C.y + (Math.random()<0.5 ? -80  : 80 ), 70 + C.r, H - C.r);
+      C.x = clamp(C.x + (Math.random()<0.5 ? -160 : 160), C.r, W - C.r);
+      C.y = clamp(C.y + (Math.random()<0.5 ? -110 : 110), 70 + C.r, H - C.r);
     }
 
     if (state.rage.active) {
@@ -271,8 +325,8 @@
       if (state.rage.t >= state.rage.duration) {
         state.rage.active = false;
         state.rage.t = 0;
-        // 終了時に少し戻す（任意）
-        M.r = Math.max(M.rMin, M.r - 6);
+        // 終了時に少し戻す
+        M.r = Math.max(M.rMin, M.r - (6 * SCALE));
       }
     }
 
@@ -308,7 +362,7 @@
       C.x += (dx/d) * baseCSpeed * dt;
       C.y += (dy/d) * baseCSpeed * dt;
     } else {
-      // 猫が逃げる（鬼モード）
+      // 猫が泣きながら逃げる（鬼モード）
       const runSpeed = baseCSpeed * 1.35;
       const dx = C.x - M.x;
       const dy = C.y - M.y;
@@ -341,7 +395,9 @@
       const ch = state.cheeses[i];
       if (Math.hypot(M.x - ch.x, M.y - ch.y) < M.r + ch.r){
         state.cheeses.splice(i, 1);
+
         state.score += 1;
+        state.cheesesEaten += 1; // ★変身のカウント
 
         // grow a bit
         M.r = Math.min(M.rMax, M.r + M.growStep);
@@ -351,8 +407,8 @@
         // small pushback on cat
         const pdx = C.x - M.x, pdy = C.y - M.y;
         const pd = Math.hypot(pdx,pdy) || 1;
-        C.x += (pdx/pd) * 28;
-        C.y += (pdy/pd) * 28;
+        C.x += (pdx/pd) * (28 * SCALE);
+        C.y += (pdy/pd) * (28 * SCALE);
 
         // sparkle fx
         for (let k=0;k<8;k++){
@@ -385,8 +441,8 @@
 
         const dx = M.x - C.x, dy = M.y - C.y;
         const d = Math.hypot(dx,dy) || 1;
-        M.x += (dx/d) * 40;
-        M.y += (dy/d) * 40;
+        M.x += (dx/d) * (40 * SCALE);
+        M.y += (dy/d) * (40 * SCALE);
 
         M.invuln = 0.9;
 
@@ -403,7 +459,7 @@
         state.rage.t = 0;
 
         // ちょい収束
-        M.r = Math.max(M.rMin, M.r - 10);
+        M.r = Math.max(M.rMin, M.r - (10 * SCALE));
 
         // 猫を逃がす
         C.x = W * 0.78;
@@ -419,12 +475,15 @@
     overlay.innerHTML = `
       <div class="card">
         <div class="title">ゲームオーバー</div>
-        <div class="desc">スコア：<b>${state.score}</b>　レベル：<b>${state.level}</b></div>
+        <div class="desc">
+          スコア：<b>${state.score}</b>　レベル：<b>${state.level}</b><br/>
+          チーズ：<b>${state.cheesesEaten}</b>
+        </div>
         <div class="btns">
           <button id="retryBtn">もう一回</button>
           <button id="closeBtn">閉じる</button>
         </div>
-        <div class="note">コツ：チーズで大きくなる。大きくなると鬼モードで逆転できる。</div>
+        <div class="note">チーズ10個で鬼モード。猫が逃げるので追いかけて逆転。</div>
       </div>
     `;
     overlay.style.display = "flex";
@@ -443,6 +502,7 @@
   // Drawing
   function draw(){
     resize();
+    applyScaledParams();
     const W = canvas.width, H = canvas.height;
 
     // Background
@@ -462,7 +522,7 @@
     for (const p of state.fx){
       ctx.globalAlpha = Math.max(0, p.life / 0.35);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 3.2, 0, Math.PI*2);
+      ctx.arc(p.x, p.y, 3.2 * SCALE, 0, Math.PI*2);
       ctx.fillStyle = "rgba(255,255,255,0.9)";
       ctx.fill();
     }
@@ -493,9 +553,9 @@
     // Target ring
     if (state.target){
       ctx.strokeStyle = "rgba(255,255,255,0.18)";
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2 * SCALE;
       ctx.beginPath();
-      ctx.arc(state.target.x, state.target.y, 18, 0, Math.PI*2);
+      ctx.arc(state.target.x, state.target.y, 18 * SCALE, 0, Math.PI*2);
       ctx.stroke();
     }
 
@@ -539,7 +599,7 @@
   }
 
   function drawCheese(x,y,r){
-    // vector cheese (no image needed)
+    // vector cheese
     ctx.save();
     ctx.translate(x,y);
 
@@ -576,7 +636,7 @@
         <div class="title">Chase &amp; Cheese</div>
         <div class="desc">
           ネズミ役でチーズを集めよう。猫に触れられると小さくなる。<br/>
-          大きくなると<b>鬼モード</b>で猫が逃げる。追いかけて捕まえよう。
+          チーズを<b>10個</b>食べると<b>鬼モード</b>に変身。猫が逃げるので追いかけよう。
         </div>
         <div class="btns">
           <button id="startBtn">スタート</button>
@@ -606,7 +666,7 @@
           1) 画面を押したまま指を動かす → ネズミが追従<br/>
           2) チーズを拾う → スコア増 & ネズミが少し大きくなる<br/>
           3) 猫に触れる → ネズミが少し小さくなる（小さくなりすぎると負け）<br/>
-          4) 一定サイズ以上で<b>鬼モード</b>：猫が泣きながら逃げる → 追いつくとボーナス
+          4) チーズ<b>10個</b>で<b>鬼モード</b>：猫が泣きながら逃げる → 追いつくとボーナス
         </div>
         <div class="btns">
           <button id="backBtn">戻る</button>
